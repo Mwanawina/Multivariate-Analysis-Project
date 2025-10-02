@@ -1,0 +1,843 @@
+---
+output:
+  pdf_document: default
+  html_document: default
+---
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+\begin{titlepage}
+\begin{center}
+
+\vspace*{0.06\textheight}
+
+{\scshape\huge University of Cape Town\par}\vspace{1cm}
+
+\includegraphics[width=0.5\textwidth]{UCT_Logo.jpg}\\[0.6cm]
+
+\rule{\textwidth}{1pt}
+{\huge \bfseries EMPLOYEE ATTRITION MULTIVARIATE ANALYSIS\par}
+\rule{\textwidth}{1pt}
+\vspace{0.4cm}
+
+\begin{minipage}[t]{0.4\textwidth}
+\begin{flushleft} \large
+% \emph{Student No:} MWNSAN002 \\
+\end{flushleft}
+\end{minipage}
+\begin{minipage}[t]{0.4\textwidth}
+\begin{flushright} \large
+% \emph{Co-supervisor:} \\
+% Name 
+\end{flushright}
+\end{minipage}\\
+
+\Large \textbf{Sanana Mwanawina (MWNSAN002)}\\[0.3cm] 
+\textbf{}\\[1cm]
+
+{\scshape\LARGE Department of Statistical Sciences\par}\vspace{1cm}
+
+{\large \today}\\[2cm]
+
+\vfill
+
+\end{center}
+\end{titlepage}
+
+
+```{r, echo=FALSE, warning=FALSE, message=FALSE}
+library(tidyverse)
+library(cluster)
+library(factoextra)
+library(mclust)
+library(aricode)
+library(smacof)
+library(ROSE)
+library(rsample)
+library(ggplot2)
+library(cowplot)
+library(e1071)
+library(gridExtra)
+
+library(knitr)
+library(randomForest)
+
+library(patchwork)
+library(reshape2)
+```
+
+# Introduction
+
+Companies dedicate significant time and resources to their employees, and when employees leave for other organisations, replacing them incurs additional costs and effort. Accurately predicting employee turnover can help businesses mitigate these losses and optimise retention strategies.
+
+## Research Question
+
+What are the key factors influencing employee turnover, and can we build a predictive model to identify employees at risk of leaving? 
+
+## Hypotheses to Test
+
+1. **Employees with low job satisfaction are more likely to leave.**  
+   A study by Rakhra (2018) provided strong evidence to support the idea that organisations aiming for high employee retention must focus on ensuring their staff are happy and satisfied.  
+
+2. **Salary hikes have a significant impact on retention.**  
+   There is strong evidence that suggests that organisations that succeed in the marketplace must maintain attractive salary packages to increase employee loyalty and higher retention rates (Iqbal et al., 2017).  
+
+3. **Salary is a stronger predictor of attrition than work-life balance for young employees or people early in their career.**  
+   Research shows that pay and benefits have greater influence on young professionals' retention compared to work-life balance (Chua, 2023).  
+
+## Data Description
+
+The IBM HR Analytics Employee Attrition and Performance dataset is a synthetic dataset created by the International Business Machines (IBM) Corporation to model employee attrition factors in a corporate setting. The dataset contains 30 variables (21 numeric and 9 categorical) related to employee demographics, job roles, and performance metrics.  
+
+### Description of Observations  
+
+The dataset consists of 1,470 employee records, each represented by multiple attributes that capture various aspects of their employment experience. The variables include:
+
+- **Demographic Information:** Age, gender, marital status, and whether the employee is over 18.
+- **Job-Related Features:** Job role, department, job level, and business travel frequency.
+- **Workplace Environment:** Job satisfaction, work-life balance, overtime status, and relationship satisfaction.
+- **Performance Metrics:** Performance rating, job involvement, and training attendance.
+- **Employment History:** Years at company, years in the current role, and distance from home.
+- **Education and Qualifications:** Highest education level and field of study.
+- **Attrition**: A categorical variable indicating whether an employee left the company (Yes/No). The dataset is imbalanced, with 83.9% labeled as "No" and 16.1% as "Yes". This imbalance is typical in real-world attrition datasets, as most employees in an organisation remain employed over a given period. 
+
+\newpage
+
+```{r, echo=FALSE, fig.width=3, fig.height=3, fig.cap = "Distribution of target variable (Attrition) classes"}
+data <- read.csv("C:/Users/sanan/OneDrive/Desktop/UCT/Masters/STA5069Z - Multivariate Analysis/Project/WA_Fn-UseC_-HR-Employee-Attrition.csv")
+
+data_attrition_vis <- data
+
+data_attrition_vis$Attrition <- as.factor(data_attrition_vis$Attrition)
+
+attrition_summary <- data_attrition_vis %>%
+  group_by(Attrition) %>%
+  summarise(Count = n()) %>%
+  mutate(Percentage = round((Count / sum(Count)) * 100, 2))
+
+ggplot(data_attrition_vis, aes(x = Attrition, fill = Attrition)) +
+  geom_bar() +
+  labs(title = "Attrition Distribution", x = "Attrition", y = "Count") +
+  theme_minimal() +
+  scale_fill_manual(values = c("No" = "steelblue", "Yes" = "coral"))
+```
+
+More details about key features of the dataset can be found in the appendix.
+
+### Data Preprocessing
+
+Before applying multivariate analysis techniques, the dataset was preprocessed as follows:
+
+1. Removal of non-informative columns. Columns such as EmployeeCount, EmployeeNumber, StandardHours, and Over18 were removed as they did not provide useful predictive information.
+2. Categorical variable encoding to convert their respective levels into numeric representations.
+3. Continuous numeric variables were standardised to ensure that all features contributed equally.
+
+```{r, echo=FALSE}
+# Checking unique entries to justify column dropping
+# data %>%
+  # summarise(
+  #  EmployeeCount = n_distinct(EmployeeCount),
+  # EmployeeNumber = n_distinct(EmployeeNumber),
+  # StandardHours = n_distinct(StandardHours),
+  #Over18 = n_distinct(Over18)
+  #)
+
+# Non-informative, so drop columns
+data <- data %>% select(-c(EmployeeCount, EmployeeNumber, StandardHours, Over18))
+
+# Categorical variables -> factors
+data <- data %>% mutate(across(where(is.character), as.factor))
+
+# Encode categorical variables -> numeric
+data <- data %>% mutate(across(where(is.factor), as.numeric))
+
+# Remove target variable from data and also create separate object for target
+target <- data$Attrition
+data <- data %>% select(-Attrition)
+
+# Scale only continuous variables
+continuous_vars <- c("Age", "DailyRate", "DistanceFromHome", "HourlyRate", "MonthlyIncome", "MonthlyRate", "NumCompaniesWorked", "PercentSalaryHike", "TotalWorkingYears", "TrainingTimesLastYear", "YearsAtCompany", "YearsInCurrentRole", "YearsSinceLastPromotion", "YearsWithCurrManager")
+
+data_scaled <- data
+data_scaled[continuous_vars] <- scale(data[continuous_vars])
+
+# Define the variable types as a named list
+# Define the 'type' list based on the variable types
+#var_types <- list(
+ # Gender = "factor",
+ # OverTime = "factor",
+ # PerformanceRating = "ordered"
+#)
+
+```
+
+# Methodology
+
+To analyse the research question, we employed multiple multivariate statistical methods. We aim to:
+
+1. Use multidimensional scaling (MDS) to reduce the dimensions of the dataset.
+2. Use clustering analysis to see if meaningful subgroups emerge, and visualise these in the lower dimensional space created using MDS.
+3. Use Attrition as the target variable and train a support vectors machines (SVM) classifier and a random forest classifier to predict attrition.
+
+## Multidimensional Scaling (MDS)
+
+To visualise the structure of the dataset, we applied MDS which reduced the dataset to a two-dimensional space. Given the presence of both numerical and categorical variables, we used **Gower’s distance** to ensure a meaningful representation. We assessed the quality of the MDS projection using a **stress test**, which measures how well the lower-dimensional representation preserves the original distances. A low stress value indicates that the lower-dimensional mapping retains much of the original data’s structure, making it suitable for visualisation.
+
+```{r, echo=FALSE, warning=FALSE, fig.width=8, fig.height=3}
+# Distance matrix first 
+# gower_dist <- daisy(data_scaled, metric = "gower")
+
+# Now compute Gower's distance
+gower_dist <- daisy(data_scaled, metric = "gower")
+
+# Apply MDS
+mds_result <- cmdscale(gower_dist, k = 2, eig = TRUE)
+df_mds <- as.data.frame(mds_result$points)
+df_mds$Attrition <- target
+
+# Assessing MDS using Stress Test
+# stress_value <- sum(mds_result$GOF)  
+stress_value <- sum(mds_result$GOF[1])
+
+# 2D representation
+df_mds_vis <- df_mds
+df_mds_vis$Attrition <- as.factor(df_mds_vis$Attrition)
+mds_2D_plot <- ggplot(df_mds_vis, aes(V1, V2, color = Attrition)) + geom_point() + labs(title = "2D Representation of Observations") + scale_color_manual(values = c("coral", "steelblue"))
+
+```
+
+## Feature Importance
+
+The precursor to clustering was an exploration of feature importance. Since the dataset contains many variables, identifying the most important ones can greatly aid **cluster profiling** by reducing complexity and highlighting key dimensions to focus on. To achieve this, a **feature importance** plot was generated by training a random forest classifier on the dataset. The classifier was optimised using a grid search over the following hyperparameter values:
+
+- **mtry**: the number of randomly sampled features
+- **ntree**: the number of trees
+
+By analysing feature importance scores, we aimed to refine our cluster profiling by focusing on the most relevant attributes.  An important caveat is that the random forest is a supervised algorithm, and may therefore capture a different structure from that revealed by the clustering algorithm. For this reason, the results from the feature importance plot are treated as a suggestive guide rather than a definitive one. The random forest classifier will be compared to the SVM classifier, which will be discussed later.
+
+For **using the feature importance to determine the top features**, we followed the approach suggested by Prasetiyowati et al. (2021) which is to apply a relative threshold to the feature importance scores obtained from the Random Forest model. Features with importance values below this threshold can be excluded which could potentially improve model performance and efficiency. This threshold was determined using the mean of the scores, which is consistent with the authors' approach to identifying less informative attributes.
+
+## Clustering 
+
+We explored whether distinct subgroups exist within the dataset by applying different clustering techniques. 
+
+### 1. K-Means Clustering
+
+To determine the optimal number of clusters, **K**, we used two methods. The **average silhouette score** approach measures how well each data point fits within its assigned cluster compared to other clusters. A higher average score indicates better-defined clusters. The **gap statistic** approach compares the within-cluster dispersion to that expected under a reference null distribution, allowing us to identify the K at which the observed clustering is substantially better than random. It is the smallest K where the gap value is within one standard error of the gap at K + 1. In the figure that follows, the optimal K for both approaches was 3 and it is indicated with a vertical dotted line:
+
+```{r, echo=FALSE, warning=FALSE, fig.width=8, fig.height=3, fig.cap = "Results of average silhouette scores and gap statistics techniques for choosing the optimal number of clusters"}
+avg_sil <- fviz_nbclust(data_scaled, kmeans, method = "silhouette") 
+gap_stat_plot <- fviz_nbclust(data_scaled, kmeans, method = "gap_stat") 
+
+grid.arrange(avg_sil, gap_stat_plot, ncol = 2)
+```
+
+\newpage
+
+```{r, echo=FALSE, warning=FALSE}
+set.seed(42)
+kmeans_result <- kmeans(data_scaled, centers = 3, nstart = 25)  # Choose best K
+df_mds$KMeans_Cluster <- as.factor(kmeans_result$cluster)
+```
+
+### 2. Hierarchical Clustering
+
+We used Ward’s method to minimise variance within clusters, and a dendrogram was analysed to confirm the optimal number of clusters. A large vertical gap indicates that two relatively dissimilar clusters are being combined, and by cutting the dendrogram at a height just before such a large jump, we can identify a natural separation in the data. Based on this, cutting the tree at a height of 70 would be appropriate which results in 3 clusters, as shown in Figure 3 on the next page.
+
+```{r, echo=FALSE, fig.width=5, fig.height=5, fig.cap = "Dendrogram cut at height 70 to yield 3 clusters"}
+hclust_result <- hclust(dist(data_scaled), method = "ward.D2")
+plot(hclust_result, labels = FALSE, main = "Hierarchical Clustering Dendrogram")
+rect.hclust(hclust_result, k = 3, border = "red")  # Cut tree at 3 clusters
+```
+
+
+```{r, echo=FALSE}
+df_mds$HClust_Cluster <- as.factor(cutree(hclust_result, k = 3))
+```
+
+### 3. Cluster Profiling
+
+We proceeded to obtain cluster centroids for the resulting profiles. These were calculated separately: the mean for continuous columns and the mode for categorical columns. To better understand these subgroups within the context of our attrition exploration, we also calculated the percentage of observations in each cluster that originally had a value of "Yes" (represented as 2) for the Attrition attribute. 
+
+\newpage
+
+## Support Vector Machines
+
+We aimed to predict the risk of Attrition and, to achieve this, we trained an SVM classifier. SVM was chosen over other classification models due to its ability to handle high-dimensional data and class imbalance effectively. Unlike logistic regression, which assumes linear relationships, SVM can capture complex patterns using kernel methods. While tree-based models like random forests provide feature interpretability, which was utilised in this analysis, SVM demonstrated strong predictive performance with proper hyperparameter tuning despite dataset imbalance, making it the optimal choice for this project (Abdullah & Abdulazeez, 2021).
+
+As mentioned, the target variable is highly imbalanced. So, we considered different approaches to handle this issue. One approach is assigning weights to the target variable classes and fitting the model on the imbalanced dataset, while another involves using sampling techniques to balance the classes. Mohammed et al. (2020) found that oversampling performs better than undersampling for different classifiers and obtains higher scores in different evaluation metrics. So for this project, we chose to oversample the minority class (Attrition = "Yes"), resulting in the balanced distribution shown below:
+
+
+```{r, echo=FALSE, fig.width=6, fig.height=3, fig.cap = "Comparison between imbalanced and over-sampled balanced distributions of the target variable."}
+target_svm <- factor(target, levels = c(1, 2), labels = c("No", "Yes"))
+
+target_df <- data.frame(Attrition = target_svm)
+
+svm_scaled_data <- cbind(data_scaled, target_df)
+
+set.seed(42)
+
+split <- initial_split(svm_scaled_data, prop = 0.8, strata = Attrition)  # Stratified split
+train_data <- training(split)
+test_data <- testing(split)
+
+# Balancing 
+train_balanced <- ROSE(Attrition ~ ., data = train_data, seed = 42)$data
+
+p1 <- ggplot(train_data, aes(x = Attrition, fill = Attrition)) +
+  geom_bar() +
+  labs(title = "Before Balancing", x = "Attrition (No vs. Yes)", y = "Count") +
+  scale_fill_manual(values = c("steelblue", "coral")) +
+  theme_minimal()
+p2 <- ggplot(train_balanced, aes(x = Attrition, fill = Attrition)) +
+  geom_bar() +
+  labs(title = "After Balancing", x = "Attrition (No vs. Yes)", y = "Count") +
+  scale_fill_manual(values = c("steelblue", "coral")) +
+  theme_minimal()
+plot_grid(p1, p2, ncol = 2)
+```
+
+We experimented with different approaches to improve model performance and handle class imbalance:
+
+1. Training the model on the unbalanced dataset without adjusting class weights.
+2. Training the model on a balanced dataset created by oversampling the minority class (Attrition = "Yes").
+3. Training the model on the unbalanced dataset while assigning different class weights.
+4. Training the model on the unbalanced dataset tuning hyperparameters (cost, gamma, and class weight) to optimise model performance.
+5. Training the model on the unbalanced dataset using only the 12 most important features, as identified by the feature importance plot, and tuning cost, gamma, and class weight parameters.
+
+# Results	
+
+## Multidimensional Scaling
+
+The MDS projection provided a two-dimensional representation of the dataset.
+
+```{r, echo=FALSE, fig.width=6, fig.height=4, fig.cap = "Two-dimensional MDS projection of the dataset, with observations colored by the target variable (attrition)."}
+mds_2D_plot
+```
+
+The computed stress value for the above projection was **0.0974** which indicates a reasonably good ft, and therefore suggests the original distance relationships were well preserved.
+
+## Feature Importance Results
+
+For the feature importance plot, the optimised random forest classifier had the following parameter values: `mtry = 6` and `ntree = 300`. The feature importance plot is shown in figure 6 on the next page.
+
+```{r, echo=FALSE, fig.width=8, fig.height=4, fig.cap = "Random forest feature importance plot showing the relative contribution of each variable to the model’s predictions."}
+# Convert target variable to binary
+target_svm <- factor(target, levels = c(1, 2), labels = c("No", "Yes"))
+
+target_df <- data.frame(Attrition = target_svm)
+
+svm_scaled_data <- cbind(data_scaled, target_df)
+
+split <- initial_split(svm_scaled_data, prop = 0.8, strata = Attrition)  # Stratified split
+train_data <- training(split)
+test_data <- testing(split)
+
+# Define hyperparameter grid
+mtry_values <- c(2, 4, 6, 8)   
+ntree_values <- c(100, 300, 500, 700)  
+
+results <- expand.grid(mtry = mtry_values, ntree = ntree_values)
+results$Accuracy <- NA  
+
+for (i in 1:nrow(results)) {
+  rf_model <- randomForest(Attrition ~ ., data = train_data, 
+                           mtry = results$mtry[i], ntree = results$ntree[i])
+  
+  predictions <- predict(rf_model, newdata = test_data)
+  
+  accuracy <- sum(predictions == test_data$Attrition) / nrow(test_data)
+  
+  results$Accuracy[i] <- accuracy
+}
+
+best_params <- results[which.max(results$Accuracy), ]
+
+rf_best <- randomForest(Attrition ~ ., data = train_data, 
+                        mtry = best_params$mtry, ntree = best_params$ntree)
+
+importance_df <- data.frame(
+  Feature = rownames(rf_best$importance),
+  Importance = rf_best$importance[, 1]
+)
+
+# Order
+importance_df <- importance_df[order(importance_df$Importance, decreasing = TRUE),]
+
+ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Feature Importance (Random Forest)", x = "Features", y = "Importance Score") +
+  theme_minimal()
+
+```
+
+```{r, echo=FALSE}
+# Assuming `rf_model` is your fitted random forest model:
+importance_scores <- importance(rf_best)  # Or rf_model$variable.importance in ranger
+
+# Convert to a data frame for easier handling
+imp_df <- data.frame(Feature = importance_df$Feature,
+                     Score = as.numeric(importance_scores))
+
+# Calculate threshold — here using the mean as a simple example
+threshold <- mean(imp_df$Score)
+
+
+
+```
+
+According the results, `MonthlyIncome`, `Age` and `DailyRate` are the 3 most important features. We expect to see great separation in the centroids of the resulting clusters based on these features. The top features were chosen using the approach suggested by Prasetiyowati et al. (2021) discussed in the methodology. The features above the mean threshold of 10.6, and thus deemed important, are the top 11: `MonthlyIncome`, `Age`, `TotalWorkingYears`, `PercentSalaryHike`, `RelationshipSatisfaction`, `TrainingTimesLastYear`, `JobInvolvement`, `MaritalStatus`, `YearsSinceLastPromotion`, `JobLevel`, `BusinessTravel`.
+
+
+
+
+## Clustering
+
+### K-Means vs. Hierarchical Clustering Results
+
+To compare the results of the two clustering algorithms, the average silhouette scores, which is a measure of how similar each point is to its own cluster compared to other clusters, were used. The **K-means algorithm resulted in a higher score**, and so it was the chosen algorithm for further exploration.
+
+```{r, echo=FALSE}
+# Compare clustering algorithms
+sil_kmeans <- mean(silhouette(kmeans_result$cluster, dist(data_scaled))[, 3])
+sil_hclust <- mean(silhouette(cutree(hclust_result, k = 3), dist(data_scaled))[, 3])
+
+```
+
+### Exploring Subgroups 
+
+We first visualise the resulting clusters in the lower dimensional space we created by implementing classical MDS. As shown in figure 7 on the next page, there is great overlap between observations in clusters 1 and 2. The observations in cluster 3 are considerably separated from the rest of the observations.
+
+\newpage
+
+```{r, echo=FALSE, fig.width=6, fig.height=4, fig.cap="Two-dimensional MDS projection of the dataset with colors indicating cluster assignments from k-means clustering."}
+# Visualize K-means clustering on MDS
+ggplot(df_mds, aes(V1, V2, color = KMeans_Cluster)) +
+  geom_point() + labs(title = "K-means Clustering in 2D Space") +
+  scale_color_manual(values = c("coral", "steelblue", "darkgrey"))
+```
+
+A closer look at the cluster centroids provided insight into the overlap and separation of the clusters observed above. We analysed the centroids across all features, identifying those with significant separation and different interpretations. Many of the important features, as indicated by the feature importance plot, were monetary. To simplify the analysis and reduce crowding the results with repetitive information, we focused only on the most important monetary feature, **MonthlyIncome**. The resulting profiles across other features with considerable separation are summarised in the table below:
+
+```{r, echo=FALSE, warning=FALSE}
+cluster_centroids <- kmeans_result$centers
+
+# only continuous columns from cluster centroids
+cluster_centroids_continuous <- cluster_centroids[, continuous_vars, drop = FALSE]
+
+# reverse scaling for continuous variables
+cluster_centroids_original <- sweep(cluster_centroids_continuous, 2, apply(data[continuous_vars], 2, sd), "*")
+cluster_centroids_original <- sweep(cluster_centroids_original, 2, apply(data[continuous_vars], 2, mean), "+")
+
+
+# Adding back categorical vars
+categorical_vars <- setdiff(names(data), continuous_vars)  
+
+# Compute the mode for each categorical variable per cluster
+mode_function <- function(x) {
+  uniq_x <- unique(x)
+  uniq_x[which.max(tabulate(match(x, uniq_x)))]  
+}
+
+categorical_centroids <- data.frame(matrix(ncol = length(categorical_vars), nrow = nrow(cluster_centroids)))
+colnames(categorical_centroids) <- categorical_vars
+
+for (cat_var in categorical_vars) {
+  categorical_centroids[[cat_var]] <- tapply(data[[cat_var]], kmeans_result$cluster, mode_function)
+}
+
+# Combine numeric and categorical centroids
+cluster_profiles <- cbind(cluster_centroids_original, categorical_centroids)
+
+# Add cluster labels
+cluster_profiles$Cluster <- paste0("Cluster ", 1:nrow(cluster_profiles))  
+cluster_profiles <- cluster_profiles %>% relocate(Cluster)  # Move Cluster column to first position
+
+# Select relevant variables
+selected_vars <- c("Cluster", "MonthlyIncome", "Age", "TotalWorkingYears", "DistanceFromHome",  "YearsAtCompany")
+
+cluster_profiles %>%
+  select(all_of(selected_vars)) %>%
+  kable(digits = 2, caption = "Cluster Profiles for Selected Features")
+```
+
+We can see that for cluster 1 and 2, their centroid values are quite close while cluster 3's value are significantly different, hence the observed separation. The attrition percentages for each cluster are summarised below:
+
+```{r, echo=FALSE}
+df_mds_profiling <- df_mds
+
+df_mds_profiling$Attrition <- as.factor(df_mds_profiling$Attrition)
+
+cluster_counts <- table(df_mds_profiling$KMeans_Cluster)
+
+yes_counts <- table(df_mds_profiling$KMeans_Cluster[df_mds_profiling$Attrition == "2"])
+
+attrition_percentages <- (yes_counts / cluster_counts) * 100
+
+attrition_df <- data.frame(Cluster = names(attrition_percentages),
+                           Percentage = as.numeric(attrition_percentages))
+
+kable(attrition_df, col.names = c("Cluster", "Attrition %"), 
+      caption = "Percentage of 'Yes' Attrition in Each Cluster",
+      digits = 2)
+
+```
+
+
+According to the above percentages, observations in cluster 3 are far less likely to leave the workplace compared to those in clusters 1 and 2. 
+
+### Cluster Profiles and Subgroups Discussion
+
+**Cluster 1**: This group consists of young professionals in their mid-to-late thirties, with nearly 9 years of experience. They have the shortest average tenure at their current companies, approximately 5 years, and earn the lowest monthly income, around 4,700 monetary units. They are the second most likely to leave their jobs.
+
+**Cluster 2**: Comprising individuals in their early-to-mid thirties, this cluster has an average work experience of 8 years and a slightly longer tenure at their current company, around 5.5 years. They leave furthest away from their workplaces, which means they have the longest commute times. Their monthly income, just under 5,000 monetary units, is comparable to that of Cluster 1. However, they have the highest likelihood of leaving their workplace.
+
+**Cluster 3**: This is the oldest group, with members in their mid-to-late forties. They have extensive experience, exceeding 20 years, and have been with their companies for nearly 15 years on average. Their homes are closest to work, so they have the shorted commute distances. Their earnings are significantly higher, at over 14,400 monetary units per month. This cluster is the least likely to leave, with an attrition rate of just 6%.
+
+## Support Vector Machines
+
+```{r, echo=FALSE, fig.height=4}
+
+# UNBALANCED DATA MODEL ---------------------------------------------------
+svm_model_unbalanced <- svm(Attrition ~ ., data = train_data, kernel = "radial")
+
+predictions_unbalanced <- predict(svm_model_unbalanced, newdata = test_data)
+
+confusion_matrix_unbalanced <- table(Predicted = predictions_unbalanced, Actual = test_data$Attrition)
+
+conf_matrix_unbalanced_df <- as.data.frame(confusion_matrix_unbalanced)
+
+conf_matrix_unbalanced_df$Actual <- factor(conf_matrix_unbalanced_df$Actual, levels = c("No", "Yes"))
+
+conf_matrix_unbalanced_df$Predicted <- factor(conf_matrix_unbalanced_df$Predicted, levels = c("No", "Yes"))
+
+p1_unbalanced <- ggplot(conf_matrix_unbalanced_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue", guide = "none") +
+  theme_minimal() +
+  labs(title = "Unbalanced Dataset", x = "Actual", y = "Predicted") +
+  scale_x_discrete(position = "top") +  # Move Actual labels to top
+  scale_y_discrete(limits = rev(levels(conf_matrix_unbalanced_df$Predicted)))
+
+# BALANCED DATA MODEL ------------------------------------------------------
+svm_model_balanced <- svm(Attrition ~ ., data = train_balanced, kernel = "radial")
+
+predictions_balanced <- predict(svm_model_balanced, newdata = test_data)
+
+confusion_matrix_balanced <- table(Predicted = predictions_balanced, Actual = test_data$Attrition)
+
+conf_matrix_balanced_df <- as.data.frame(confusion_matrix_balanced)
+
+conf_matrix_balanced_df$Actual <- factor(conf_matrix_balanced_df$Actual, levels = c("No", "Yes"))
+
+conf_matrix_balanced_df$Predicted <- factor(conf_matrix_balanced_df$Predicted, levels = c("No", "Yes"))
+
+p2_balanced <- ggplot(conf_matrix_balanced_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue", guide = "none") +
+  theme_minimal() +
+  labs(title = "Balanced Dataset", x = "Actual", y = "Predicted") +
+  scale_x_discrete(position = "top") +  # Move Actual labels to top
+  scale_y_discrete(limits = rev(levels(conf_matrix_balanced_df$Predicted)))
+
+# DIFFERENT WEIGHTS MODEL -------------------------------------------------
+weight_range <- seq(1, 100, by = 2) 
+results <- data.frame(Weight = numeric(), Precision = numeric(), Recall = numeric(), F1 = numeric())
+
+for (w in weight_range) {
+  class_weights <- c("No" = 1, "Yes" = w)
+
+  model <- svm(Attrition ~ ., data = train_data, class.weights = class_weights, kernel = "radial")
+
+  predictions <- predict(model, test_data)
+
+  actual <- as.character(test_data$Attrition)
+  predicted <- as.character(predictions)
+
+  TP <- sum(predicted == "Yes" & actual == "Yes")
+  FP <- sum(predicted == "Yes" & actual == "No")
+  FN <- sum(predicted == "No" & actual == "Yes")
+
+  precision <- ifelse((TP + FP) == 0, 0, TP / (TP + FP))
+  recall <- ifelse((TP + FN) == 0, 0, TP / (TP + FN))
+  f1_score <- ifelse((precision + recall) == 0, 0, 2 * (precision * recall) / (precision + recall))
+
+  results <- rbind(results, data.frame(Weight = w, Precision = precision, Recall = recall, F1 = f1_score))
+}
+
+svm_model_weights <- svm(Attrition ~ ., data = train_data, kernel = "radial", class.weights=c("No" = 1, "Yes" = 3))
+
+predictions_weights <- predict(svm_model_weights, newdata = test_data)
+
+confusion_matrix_weights <- table(Predicted = predictions_weights, Actual = test_data$Attrition)
+
+conf_matrix_weights_df <- as.data.frame(confusion_matrix_weights)
+
+conf_matrix_weights_df$Actual <- factor(conf_matrix_weights_df$Actual, levels = c("No", "Yes"))
+
+conf_matrix_weights_df$Predicted <- factor(conf_matrix_weights_df$Predicted, levels = c("No", "Yes"))
+
+p3_weights <- ggplot(conf_matrix_weights_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  theme_minimal() +
+  labs(title = "Weight (W) = 3", x = "Actual", y = "Predicted") +
+  scale_x_discrete(position = "top") +  # Move Actual labels to top
+  scale_y_discrete(limits = rev(levels(conf_matrix_weights_df$Predicted)))
+
+# TUNING MODEL ALL VARS --------------------------------------------------
+C_values <- c(0.1, 1, 10, 100)
+gamma_values <- c(0.01, 0.1)
+weight_values <- c(1, 3, 5, 7, 10)
+
+results <- data.frame(C=numeric(), Gamma=numeric(), Weight=numeric(), Precision=numeric(), Recall=numeric(), F1=numeric())
+
+for (C in C_values) {
+  for (gamma in gamma_values) {
+    for (weight in weight_values) {
+      
+      class_weights <- c("No" = 1, "Yes" = weight)
+    
+      model <- svm(Attrition ~ ., data=train_data, kernel="radial", cost=C, gamma=gamma, class.weights=class_weights)
+      
+      preds <- predict(model, test_data)
+    
+      preds <- as.factor(preds)
+      actuals <- as.factor(test_data$Attrition)
+      
+      table_results <- table(Predicted=preds, Actual=actuals)
+      
+      TP <- table_results["Yes", "Yes"]
+      FP <- table_results["Yes", "No"]
+      FN <- table_results["No", "Yes"]
+      
+      Precision <- TP / (TP + FP)
+      Recall <- TP / (TP + FN)
+      F1 <- 2 * (Precision * Recall) / (Precision + Recall)
+      
+      results <- rbind(results, data.frame(C, Gamma=gamma, Weight=weight, Precision, Recall, F1))
+    }
+  }
+}
+
+svm_model_HP_all <- svm(Attrition ~ ., data = train_data, kernel="radial", cost=1.0, gamma=0.01, class.weights=c("No" = 1, "Yes" = 5))
+
+predictions_HP_all <- predict(svm_model_HP_all, newdata = test_data)
+
+confusion_matrix_HP_all <- table(Predicted = predictions_HP_all, Actual = test_data$Attrition)
+
+conf_matrix_HP_all_df <- as.data.frame(confusion_matrix_HP_all)
+
+conf_matrix_HP_all_df$Actual <- factor(conf_matrix_HP_all_df$Actual, levels = c("No", "Yes"))
+
+conf_matrix_HP_all_df$Predicted <- factor(conf_matrix_HP_all_df$Predicted, levels = c("No", "Yes"))
+
+p4_HP_all <- ggplot(conf_matrix_HP_all_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue", guide = "none") +
+  theme_minimal() +
+  labs(title = "C=1.0, G=0.01, W=5", x = "Actual", y = "Predicted") +
+  scale_x_discrete(position = "top") +  # Move Actual labels to top
+  scale_y_discrete(limits = rev(levels(conf_matrix_HP_all_df$Predicted)))
+
+# TUNING MODEL TOP 10 FEATURES AND HP TUNING --------------------------------
+C_values <- c(0.1, 1, 10, 100)
+gamma_values <- c(0.01, 0.1)
+weight_values <- c(1, 3, 5, 7, 10)
+
+results <- data.frame(C=numeric(), Gamma=numeric(), Weight=numeric(), Precision=numeric(), Recall=numeric(), F1=numeric())
+
+for (C in C_values) {
+  for (gamma in gamma_values) {
+    for (weight in weight_values) {
+      
+      class_weights <- c("No" = 1, "Yes" = weight)
+      
+      model <- svm(Attrition ~ ., data = train_data[, c("MonthlyIncome", "Age", "DailyRate", "MonthlyRate", "TotalWorkingYears", "HourlyRate", "DistanceFromHome", "YearsAtCompany", "PercentSalaryHike", "OverTime", "NumCompaniesWorked", "Attrition")], kernel="radial", cost=C, gamma=gamma, class.weights=class_weights)
+      
+      preds <- predict(model, test_data)
+      
+      preds <- as.factor(preds)
+      actuals <- as.factor(test_data$Attrition)
+      
+      table_results <- table(Predicted=preds, Actual=actuals)
+      
+      TP <- table_results["Yes", "Yes"]
+      FP <- table_results["Yes", "No"]
+      FN <- table_results["No", "Yes"]
+      
+      Precision <- TP / (TP + FP)
+      Recall <- TP / (TP + FN)
+      F1 <- 2 * (Precision * Recall) / (Precision + Recall)
+      
+      results <- rbind(results, data.frame(C, Gamma=gamma, Weight=weight, Precision, Recall, F1))
+    }
+  }
+}
+svm_model_reduced <- svm(Attrition ~ ., data = train_data[, c("MonthlyIncome", "Age", "DailyRate", "MonthlyRate", "TotalWorkingYears", "HourlyRate", "DistanceFromHome", "YearsAtCompany", "PercentSalaryHike", "OverTime", "NumCompaniesWorked", "Attrition")], kernel = "radial", cost = 0.1, gamma = 0.01, class.weights=c("No" = 1, "Yes" = 5))
+
+predictions_reduced <- predict(svm_model_reduced, newdata = test_data)
+
+confusion_matrix_reduced <- table(Predicted = predictions_reduced, Actual = test_data$Attrition)
+
+conf_matrix_reduced_df <- as.data.frame(confusion_matrix_reduced)
+
+conf_matrix_reduced_df$Actual <- factor(conf_matrix_reduced_df$Actual, levels = c("No", "Yes"))
+
+conf_matrix_reduced_df$Predicted <- factor(conf_matrix_reduced_df$Predicted, levels = c("No", "Yes"))
+
+p5_reduced <- ggplot(conf_matrix_reduced_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue", guide = "none") +
+  theme_minimal() +
+  labs(title = "Reduced Features", x = "Actual", y = "Predicted") +
+  scale_x_discrete(position = "top") +  # Move Actual labels to top
+  scale_y_discrete(limits = rev(levels(conf_matrix_reduced_df$Predicted)))
+
+
+# RANDOM FOREST ---------------------------------------------------------------
+predictions_rf_best <- predict(rf_best, newdata = test_data)
+
+confusion_matrix_rf_best <- table(Predicted = predictions_rf_best, Actual = test_data$Attrition)
+
+conf_matrix_rf_best_df <- as.data.frame(confusion_matrix_rf_best)
+
+conf_matrix_rf_best_df$Actual <- factor(conf_matrix_rf_best_df$Actual, levels = c("No", "Yes"))
+
+conf_matrix_rf_best_df$Predicted <- factor(conf_matrix_rf_best_df$Predicted, levels = c("No", "Yes"))
+
+p6_rf_best <- ggplot(conf_matrix_rf_best_df, aes(x = Actual, y = Predicted, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 6) +
+  scale_fill_gradient(low = "white", high = "steelblue", guide = "none") +
+  theme_minimal() +
+  labs(title = "Random Forest", x = "Actual", y = "Predicted") +
+  scale_x_discrete(position = "top") +  # Move Actual labels to top
+  scale_y_discrete(limits = rev(levels(conf_matrix_unbalanced_df$Predicted)))
+
+
+```
+
+As discussed in the methodology, 5 different SVM models were fitted to explore if balancing the dataset, hyperparameter tuning, and reducing the feature set would improve model performance. We also evaluated the performance of the random forest classifier that was built for feature importance interpretation. The confusion matrices in figure 8 on the next page summarise the classifications of each respective approach:
+
+```{r, echo=FALSE, fig.width=8, fig.height=5, fig.cap="Confusion matrices for the different SVM configurations and the random forest classifier."}
+empty_plot <- ggplot() + theme_void()
+
+(p1_unbalanced + p2_balanced + p3_weights) / (p4_HP_all + p5_reduced + p6_rf_best) + plot_layout(guides = 'collect')
+```
+
+\newpage
+
+The different models were evaluated based on precision, recall, and accuracy. Table 3 shows the generated performance metrics:
+
+```{r, echo=FALSE}
+data <- data.frame(
+  Model = c("Unbalanced", "Balanced", "Weight (W) = 3", "C=1.0, G=0.01, W=5", "Reduced Features", "Random Forest"),
+  Precision = c(0.846, 0.517, 0.585, 0.481, 0.440, 0.889),
+  Recall = c(0.229, 0.625, 0.500, 0.771, 0.771, 0.167),
+  Accuracy = c(0.868, 0.844, 0.861, 0.827, 0.803, 0.861),
+  F1_Score = c(0.361, 0.566, 0.539, 0.592, 0.561, 0.281)
+)
+
+kable(data, digits = 3, caption = "Classification Metrics for Different Models")
+```
+
+The performance of the SVM model varies significantly depending on data balancing techniques and parameter tuning. The unbalanced model achieves the highest accuracy (86.8%) and high precision (84.6%), but its recall is extremely low (22.9%), indicating poor detection of the minority class. Balancing the dataset improves recall to 62.5%, but precision drops to 51.7%, leading to a more balanced F1-score of 0.566. Assigning weights (W=3) slightly improves recall (50.0%) while maintaining a moderate precision (58.5%), but the F1-score remains lower than the balanced model. Further parameter tuning (C=1.0, G=0.01, W=5) leads to an even higher recall (77.1%) but at the expense of precision (48.1%), resulting in a slightly improved F1-score (0.592). Reducing features leads to the lowest precision (44.0%) and accuracy (80.3%), but recall remains high (77.1%), suggesting that feature reduction may have removed important predictive variables. 
+
+The random forest classifier has the highest precision (88.9%) and a high accuracy (86.1%), but its recall is the lowest observed (16.7%) which means it detects the minority class poorly. The F1-score for this model is the lowest observed (0.281). The **best performing model** is the one with the tuned parameters (C=1.0, G=0.01, W=5) because it has the best balance of precision and recall (highest F1-score, 0.592), and it performed comparatively well across all other metrics.
+
+# Discussion
+
+From the clustering analysis, we can conclude that there are significant subgroups within our dataset. The cluster assignments reveal the following key insights:
+
+1. **Higher income and longer tenure** correlate with **lower attrition**.
+2. **Younger employees with lower earnings** are more likely to leave.
+3. **Career stability** seems to **increase with age and earnings**.
+4. Employees who **live closer to work** and have **shorter commute times** tend to stay longer at their workplaces.
+
+Our findings support the hypothesis that salary is a stronger predictor of attrition than work-life balance, not just for younger professionals but across all age groups. Some features initially considered important, such as job satisfaction and percentage salary hikes, turned out to be less influential. This suggests that for our dataset, higher salaries play a dominant role in retention, outweighing other factors. Surprisingly, commute distance proved to be more influential than expected. Employees who lived further from work were more likely to leave, suggesting that long commutes contribute to dissatisfaction and retention challenges. This highlights the potential for organisations to reduce attrition by offering flexible work arrangements.
+
+### Conclusions to Hypotheses 
+
+**Hypothesis 1: Employees with low job satisfaction are more likely to leave.**
+
+Our analysis did not strongly support the hypothesis that job satisfaction is a primary driver of attrition. Instead, salary and tenure emerged as the dominant factors, suggesting that employees may tolerate lower job satisfaction if they are well-compensated and have job stability.
+
+**Hypothesis 2: Salary hikes have a significant impact on retention.**
+
+While compensation is a critical factor in attrition, our findings indicate that absolute salary levels are more influential than periodic salary hikes. This suggests that employees are more likely to stay if they start with a competitive salary rather than relying on future raises to maintain satisfaction.
+
+**Hypothesis 3: Salary is a stronger predictor of attrition than work-life balance for young employees.**
+
+Our findings confirm that salary is a stronger predictor of attrition than work-life balance, and not just for younger professionals. Employees with lower salaries were significantly more likely to leave, whereas work-life balance factors did not contribute as strongly to the attrition model.
+
+The **key takeaways** from these hypotheses conlusions are:
+
+- Monthly income, age, and career tenure are the most critical factors affecting attrition.
+- More experienced professionals, who earn higher salaries, are less likely to leave.
+- Younger professionals tend to be more volatile, possibly seeking better-paying opportunities.
+
+However, while these features strongly influence attrition, the process of trying to build a model to predict attrition showed that **alone, the most influencial features are not enough for accurate prediction**. Reducing the feature set led to a decline in model performance. Instead of focusing solely on feature selection, hyperparameter tuning by adjusting cost, weight, and gamma parameters proved to be a more effective strategy for improving predictive performance.
+
+Ultimately, while certain features stand out as key predictors of attrition, the best results are achieved through an approach that **considers all features alongside careful hyperparameter tuning** to refine predictive accuracy.
+
+\newpage
+
+# References
+
+Abdullah, D.M. and Abdulazeez, A.M., 2021. Machine learning applications based on SVM classification a review. Qubahan Academic Journal, 1(2), pp.81-90.
+
+Chua, W.Y., 2023. The factors affecting employee retention among young graduates (Doctoral dissertation, UTAR).
+
+Iqbal, S., Guohao, L. and Akhtar, S., 2017. Effects of job organizational culture, benefits, salary on job satisfaction ultimately affecting employee retention. Review of Public Administration and Management, 5(3), pp.1-7.
+
+Mohammed, R., Rawashdeh, J. and Abdullah, M., 2020, April. Machine learning with oversampling and undersampling techniques: overview study and experimental results. In 2020 11th international conference on information and communication systems (ICICS) (pp. 243-248). IEEE.
+
+Prasetiyowati, M.I., Maulidevi, N.U. and Surendro, K., 2021. Determining threshold value on information gain feature selection to increase speed and prediction accuracy of random forest. Journal of Big Data, 8(1), p.84.
+
+Rakhra, H.K., 2018. Study on factors influencing employee retention in companies. International journal of public sector performance management, 4(1), pp.57-79.
+
+
+\newpage
+
+# Appendix
+
+## Exploratory Data Analysis of Key Features
+
+```{r, echo=FALSE, warning=FALSE, fig.cap = "Box plot comparing monthly income across job levels"}
+data <- read.csv("C:/Users/sanan/OneDrive/Desktop/UCT/Masters/STA5069Z - Multivariate Analysis/Project/WA_Fn-UseC_-HR-Employee-Attrition.csv")
+
+eda1 <- ggplot(data, aes(x = factor(JobLevel), y = MonthlyIncome, fill = factor(JobLevel))) +
+  geom_boxplot() +
+  labs(title = "Monthly Income by Job Level", x = "Job Level", y = "Monthly Income") + scale_color_manual(values = c("pink", "lightblue", "palegreen", "orchid", "peachpuff"))
+
+eda1
+```
+
+```{r, echo=FALSE, warning=FALSE, fig.cap = "Histogram of employee age distribution"}
+eda2 <- ggplot(data, aes(x = Age)) +
+  geom_histogram(binwidth = 5, fill = "lightblue", color = "black", alpha = 0.7) +
+  labs(title = "Age Distribution of Employees", x = "Age", y = "Count") +
+  theme_minimal()
+
+eda2
+
+```
+
+```{r, warning=FALSE, echo=FALSE}
+library(ggcorrplot)
+
+num_vars <- data %>% select_if(is.numeric)
+
+corr_matrix <- cor(num_vars, use = "complete.obs")
+
+ggcorrplot(corr_matrix, method = "square", lab = FALSE, type = "lower",
+           title = "Correlation Heatmap of Key Variables")
+```
